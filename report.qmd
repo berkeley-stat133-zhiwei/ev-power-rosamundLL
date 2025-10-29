@@ -8,27 +8,122 @@ format: typst
 ## **Part 0: libraries**
 
 ```{r}
-
+library(sf)
+library(rnaturalearth)
+library(dplyr)
+library(ggplot2)
+library(tidyverse)
+library(stringr)
 ```
 
 ## **Part 1:** **Defining Research Question**
 
-Chosen Question:
+Chosen Question:(I want to use questions from examples): 
+ How has the share of renewable energy changed from 2021–2023 across states? 
+ What is the share of electricity that comes from clean sources by state?
+
 
 ## **Part 2: Data Preparation and Cleaning**
 
 ```{r}
+renew21 <- read_csv("data/renew-use-2021.csv") 
+renew22 <- read_csv("data/renew-use-2022.csv") 
+renew23 <- read_csv("data/renew-use-2023.csv") 
+tot21 <- read_csv("data/total-use-2021.csv")
+tot22 <- read_csv("data/total-use-2022.csv") 
+tot23 <- read_csv("data/total-use-2023.csv")
+price <- read_csv("data/av-energy-price-2021-2023.csv") 
+ev    <- read_csv("data/ev-registrations-by-state-2023.csv") 
+renew21 <- renew21 |> mutate(Renewable_Use_2021 = as.numeric(str_extract(Renewable_Use_2021, "\\d+\\.?\\d*")))
+renew22 <- renew22 |> mutate(Renewable_Use_2022 = as.numeric(str_extract(Renewable_Use_2022, "\\d+\\.?\\d*")))
+renew23 <- renew23 |> mutate(Renewable_Use_2023 = as.numeric(str_extract(Renewable_Use_2023, "\\d+\\.?\\d*")))
+```
 
+```{r}
+fix_colnames <- function(df) {
+  names(df) <- names(df) |>
+    str_to_lower() |>                     
+    str_replace_all("[\\s-]+", "_") |>    
+    str_replace_all("[()%]", "")         
+  df
+}
+normalize_state <- function(x) {
+  x |>
+    str_squish() |>                      
+    str_to_title() |>                   
+    str_replace_all("D\\.c\\.|Dc|D C", "District Of Columbia")
+}
+files <- list(renew21, renew22, renew23, tot21, tot22, tot23, price, ev)
+files <- lapply(files, fix_colnames)
+files <- lapply(files, function(df) {
+  state_col <- names(df)[str_detect(names(df), "state")][1]
+  if (!is.na(state_col)) {
+    df <- df %>% mutate(state = normalize_state(.data[[state_col]]))
+  }
+  df
+})
+renew21 <- files[[1]]
+renew22 <- files[[2]]
+renew23 <- files[[3]]
+tot21   <- files[[4]]
+tot22   <- files[[5]]
+tot23   <- files[[6]]
+price   <- files[[7]]
+ev      <- files[[8]]
 ```
 
 ## **Part 3: Joining / Pivoting Datasets for Analysis**
 
 ```{r}
+tot21_long <- tot21 %>%
+  pivot_longer(
+    cols = -energy_source,              
+    names_to = "state",                 
+    values_to = "total_use"             
+  ) %>%
+  mutate(year = 2021)
 
+tot22_long <- tot22 %>%
+  pivot_longer(cols = -energy_source, names_to = "state", values_to = "total_use") %>%
+  mutate(year = 2022)
+
+tot23_long <- tot23 %>%
+  pivot_longer(cols = -energy_source, names_to = "state", values_to = "total_use") %>%
+  mutate(year = 2023)
+total_all <- bind_rows(tot21_long, tot22_long, tot23_long) 
+renew_all <- renew_all %>%
+  mutate(state = tolower(state))
+energy_all <- inner_join(renew_all, total_all, by = c("state", "year")) %>%
+  mutate(renew_share = renewable_use / total_use)
 ```
 
 ## **Part 4: Mapping Visualization**
 
 ```{r}
+library(sf)
+usa_states <- st_read(
+  "https://raw.githubusercontent.com/PublicaMundi/MappingAPI/master/data/geojson/us-states.json",
+  quiet = TRUE
+) %>%
+  mutate(state_l = tolower(name))
+map_2023 <- energy_all %>%
+  filter(year == 2023) %>%
+  mutate(
+    state_l    = tolower(str_squish(state)),  
+    renew_share = as.numeric(renew_share)     
+  )
+map_data <- usa_states %>% left_join(map_2023, by = "state_l")
 
+ggplot(map_data) +
+  geom_sf(aes(fill = renew_share), color = "white", size = 0.2) +
+  scale_fill_viridis_c(
+    name   = "Renewable Share (2023)",
+    labels = percent_format(accuracy = 1),
+    na.value = "grey90"  
+  ) +
+  labs(
+    title   = "Share of Renewable Energy by State (2023)"
+  ) +
+  theme_minimal()
 ```
+idk why all states look like light grey and it's not colored.
